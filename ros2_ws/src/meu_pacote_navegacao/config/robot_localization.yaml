@@ -1,0 +1,39 @@
+# -----------------------------------------------------------------
+# robot_localization.yaml (VERSÃO FINAL - DIFERENCIAL)
+# -----------------------------------------------------------------
+
+robot_localization:
+  ros__parameters:
+
+    frequency: 30.0
+    sensor_timeout: 0.1
+    two_d_mode: true 
+    print_diagnostics: true
+
+    # --- Frames (Corretos) ---
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom # Publica a TF odom -> base_link (Correto)
+
+    # --- Sensor /odom (do T2) ---
+    odom0: /odom
+    odom0_queue_size: 9
+
+    # --- A CORREÇÃO CRÍTICA ---
+    # Diz ao EKF para IGNORAR a Pose (X,Y,Yaw) do T2
+    # e usar APENAS as Velocidades (Twist)
+    odom0_differential: true
+    odom0_relative: false # 'false' é correto quando differential=true e medindo velocidades
+
+    odom0_config: 
+    # [X,     Y,     Z,      (Pose)
+    #  Roll,  Pitch, Yaw,
+    #  Vx,    Vy,    Vz,     (Velocidade/Twist)
+    #  VR,    VP,    VYaw,
+    #  Ax,    Ay,    Az]
+      [false, false, false,  # Ignorar X, Y, Z da Pose
+       false, false, false,  # Ignorar R, P, Y da Pose
+       true,  false, false,  # USAR Vx (Velocidade Linear)
+       false, false, true,   # USAR V-Yaw (Velocidade Angular)
+       false, false, false]  # Ignorar o resto

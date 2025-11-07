@@ -33,11 +33,16 @@ volatile long encoderCount[2] = {0, 0}; // Alterado para long para maior precis�
 volatile long encoderPrevCount[2] = {0, 0};
 volatile unsigned long lastTimeSpeed[2] = {0, 0}; 
 volatile double currentTicksPerSecond[2] = {0.0, 0.0}; 
+int pwm_L_last = 0;
+int pwm_R_last = 0;
+const int PWM_SLEW_STEP = 8; // máx variação por ciclo (~8/255)
 
 // Variáveis de Estado do IMU
 Adafruit_MPU6050 mpu;
 volatile double currentTheta = 0.0; // Ângulo Theta/Yaw em RADIANOS
 unsigned long lastIMUTime = 0;
+double gyro_bias_z = 0.0;             // Desvio (bias) do giroscópio Z
+bool imu_calibrated = false;          // Flag de calibração
 
 // Constantes de Cinemática
 const double MAX_RPM_SETPOINT = 40.0; 
@@ -52,7 +57,16 @@ double target_omega_angular = 0.0;
 
 // Variável para o tempo limite de segurança
 unsigned long last_cmd_time = 0;
-const long CMD_TIMEOUT_MS = 500; // 500 milissegundos é um bom valor padrão
+const long CMD_TIMEOUT_MS = 1200; // 1200 milissegundos é um bom valor padrão
+
+// 
+// --- HELPER --- 
+//
+int slew_limit(int target, int last, int step) {
+    if (target > last + step) return last + step;
+    if (target < last - step) return last - step;
+    return target;
+}
 
 // ==========================================================
 // --- CLASSE ENCODER (Lógica da Interrupção) ---
@@ -207,24 +221,48 @@ void calculateTicksRate(int motor_side) {
 }
 
 /**
- * @brief Lê a taxa angular do MPU-6050 (Eixo Z) e a integra para estimar o ângulo.
+ * @brief Calibra o giroscópio Z do MPU-6050
+ * Mede o desvio (bias) enquanto o robô está PARADO
+ */
+void calibrateIMU() {
+    Serial.println(F("[IMU] Iniciando calibração do giroscópio..."));
+    const int samples = 500;
+    double sum = 0.0;
+    sensors_event_t a, g, temp;
+
+    for (int i = 0; i < samples; i++) {
+        mpu.getEvent(&a, &g, &temp);
+        sum += g.gyro.z;  // leitura em rad/s
+        delay(5);         // 500 * 5ms = 2.5s de amostragem
+    }
+
+    gyro_bias_z = sum / samples;
+    imu_calibrated = true;
+    Serial.print(F("[IMU] Calibração concluída. Bias Z = "));
+    Serial.println(gyro_bias_z, 6);
+}
+
+/**
+ * @brief Lê o giroscópio do MPU-6050 e integra o yaw (Z) em radianos.
+ * Aplica compensação de bias e normalização de ângulo.
  */
 void readIMUTheta() {
+    if (!imu_calibrated) return;  // garante calibração antes de integrar
+
     unsigned long currentTime = micros();
-    double dt = (currentTime - lastIMUTime) / 1000000.0; // Em segundos
+    double dt = (currentTime - lastIMUTime) / 1e6;  // Δt em segundos
     lastIMUTime = currentTime;
-    
+
     sensors_event_t a, g, temp;
     mpu.getEvent(&a, &g, &temp);
 
-    double yaw_rate_rad_s = g.gyro.z; 
-
-    // Integração simples
+    // Compensa o bias e integra o yaw
+    double yaw_rate_rad_s = g.gyro.z - gyro_bias_z;
     currentTheta += yaw_rate_rad_s * dt;
 
-    // Normaliza o ângulo entre -PI e PI
-    while (currentTheta > PI) currentTheta -= 2 * PI;
-    while (currentTheta < -PI) currentTheta += 2 * PI;
+    // Mantém o ângulo dentro de [-PI, PI]
+    while (currentTheta > PI)  currentTheta -= 2.0 * PI;
+    while (currentTheta < -PI) currentTheta += 2.0 * PI;
 }
 
 
@@ -252,6 +290,11 @@ void calculateAndSetPWM(double v, double omega) {
     int pwm_L = (int)((v_ref_L / max_v) * 255.0);
     int pwm_R = (int)((v_ref_R / max_v) * 255.0);
 
+    pwm_L = slew_limit(pwm_L, pwm_L_last, PWM_SLEW_STEP);
+    pwm_R = slew_limit(pwm_R, pwm_R_last, PWM_SLEW_STEP);
+    pwm_L_last = pwm_L;
+    pwm_R_last = pwm_R;
+    
     // 3. ATUAÇÃO NO MOTOR
     setMotorPWM(LEFT, pwm_L); 
     setMotorPWM(RIGHT, pwm_R);
@@ -301,81 +344,95 @@ void readSerialCommand() {
 }
 
 /**
- * @brief Publica os dados de Odometria (Encoder e IMU) para o ROS.
- * CORRIGIDO: Garante que os valores de Ticks não sejam vazios, resolvendo o erro de parsing.
+ * @brief Publica odometria com o ângulo atualizado pelo IMU.
  */
-void publishOdometry() {
+void publishOdometry(unsigned long currentTime) {
+    // --- Variáveis locais "seguras" ---
+    long ticksL_safe, ticksR_safe;
+    unsigned long lastTimeL_safe, lastTimeR_safe;
+    long prevTicksL_safe, prevTicksR_safe;
+    double ticks_sL = 0.0, ticks_sR = 0.0;
 
-    readIMUTheta(); 
-    calculateTicksRate(LEFT); 
-    calculateTicksRate(RIGHT);
+    // --- Cópia atômica das variáveis voláteis ---
+    noInterrupts(); 
+    ticksL_safe = encoderCount[LEFT];
+    ticksR_safe = encoderCount[RIGHT];
+    lastTimeL_safe = lastTimeSpeed[LEFT];
+    lastTimeR_safe = lastTimeSpeed[RIGHT];
+    prevTicksL_safe = encoderPrevCount[LEFT];
+    prevTicksR_safe = encoderPrevCount[RIGHT];
+    lastTimeSpeed[LEFT] = currentTime;
+    lastTimeSpeed[RIGHT] = currentTime;
+    encoderPrevCount[LEFT] = ticksL_safe;
+    encoderPrevCount[RIGHT] = ticksR_safe;
+    interrupts();
 
-    // Coleta dos valores voláteis para publicação
-    long ticksL = encoder_obj.readPulses(LEFT);
-    long ticksR = encoder_obj.readPulses(RIGHT);
-    double ticks_sL = encoder_obj.readTicksPerSecond(LEFT);
-    double ticks_sR = encoder_obj.readTicksPerSecond(RIGHT);
-    double theta = currentTheta; 
+    // --- Cálculo das velocidades ---
+    long deltaTicksL = ticksL_safe - prevTicksL_safe;
+    long deltaTicksR = ticksR_safe - prevTicksR_safe;
+    unsigned long deltaTimeL = currentTime - lastTimeL_safe;
+    unsigned long deltaTimeR = currentTime - lastTimeR_safe;
+    if (deltaTimeL > 0) ticks_sL = (deltaTicksL / (double)deltaTimeL) * 1000.0;
+    if (deltaTimeR > 0) ticks_sR = (deltaTicksR / (double)deltaTimeR) * 1000.0;
 
+    // --- Usa o ângulo atualizado pelo IMU ---
+    double theta = currentTheta;
 
-    char buffer[100]; // Buffer grande o suficiente para a  mensagem
-    // Formato: O,<TicksL>,<TicksR>,<Ticks/sL>,<Ticks/sR>,<Theta_Rad>\n
-    sprintf(buffer, "O,%ld,%ld,%.1f,%.1f,%.4f",
-                ticksL,
-                ticksR,
-                ticks_sL,
-                ticks_sR,
-                theta
-        );
-    // Enviar a string completa de uma só vez (atómico)
+    // --- Publicação via Serial ---
+    char buffer[96]; 
+    snprintf(buffer, sizeof(buffer), "O,%ld,%ld,%.1f,%.1f,%.5f",
+            ticksL_safe, ticksR_safe,
+            ticks_sL, ticks_sR,
+            theta);
     Serial.println(buffer);
-
-}
+}    
+    
 // ==========================================================
 // --- CÓDIGO PRINCIPAL (setup e loop) ---
 // ==========================================================
-
 void setup() {
-  Serial.begin(115200); 
-  
-  pinMode(M1_PWM_R_PIN, OUTPUT); pinMode(M1_PWM_L_PIN, OUTPUT);
-  pinMode(M2_PWM_R_PIN, OUTPUT); pinMode(M2_PWM_L_PIN, OUTPUT);
+    Serial.begin(115200);
+    pinMode(M1_PWM_R_PIN, OUTPUT); pinMode(M1_PWM_L_PIN, OUTPUT);
+    pinMode(M2_PWM_R_PIN, OUTPUT); pinMode(M2_PWM_L_PIN, OUTPUT);
 
-  encoder_obj.setup();
-  stopAllMotors(); 
-  encoder_obj.reset();
+    encoder_obj.setup();
+    stopAllMotors(); 
+    encoder_obj.reset();
 
-  // INICIALIZAÇÃO DO MPU-6050
-  Wire.begin(); 
-  if (!mpu.begin()) {
-  } else {
-    mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
-    mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-    mpu.setFilterBandwidth(MPU6050_BAND_21_HZ); 
-    lastIMUTime = micros(); 
-  }
-  
-  delay(100); 
+    // --- Inicializa o MPU-6050 ---
+    Wire.begin();
+    if (!mpu.begin()) {
+        Serial.println(F("[ERRO] MPU6050 não detectado!"));
+    } else {
+        mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
+        mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+        mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+        delay(500);
+        calibrateIMU();          // Realiza calibração inicial (robô deve estar parado)
+        lastIMUTime = micros();  // Marca tempo inicial
+    }
 }
-
+    
 void loop() {
     static unsigned long last_odom_time = 0;
+    unsigned long current_time_ms = millis();
 
-    // 1. RECEBER COMANDOS DO ROS (V,v,omega)
-    readSerialCommand(); 
+    // 1. Receber comandos do ROS (V, ω)
+    readSerialCommand();
 
-    // Verificação do Tempo Limite de Comando
-    if (millis() - last_cmd_time > CMD_TIMEOUT_MS) {
+    // 2. Verifica timeout de segurança
+    if (current_time_ms - last_cmd_time > CMD_TIMEOUT_MS) {
         target_v_linear = 0.0;
         target_omega_angular = 0.0;
     }
 
-    // 2. EXECUTAR CINEMÁTICA E ATUAR NOS MOTORES
-    calculateAndSetPWM(target_v_linear, target_omega_angular); 
+    // 3. Cinemática inversa e controle de motores
+    calculateAndSetPWM(target_v_linear, target_omega_angular);
 
-    // 3. PUBLICAR ODOMETRIA
-    if (millis() - last_odom_time >= ODOM_PUB_INTERVAL) {
-        publishOdometry(); 
-        last_odom_time = millis();
+    // 4. Publicar odometria a cada intervalo
+    if (current_time_ms - last_odom_time >= ODOM_PUB_INTERVAL) {
+        readIMUTheta();                  // Atualiza yaw com IMU
+        publishOdometry(current_time_ms);
+        last_odom_time = current_time_ms;
     }
 }

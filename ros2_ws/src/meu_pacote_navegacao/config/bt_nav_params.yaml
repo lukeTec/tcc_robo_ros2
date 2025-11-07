@@ -1,0 +1,16 @@
+bt_navigator_custom:
+  ros__parameters:
+    use_sim_time: false
+    global_frame: "map"
+    robot_base_frame: "base_link"
+    transform_tolerance: 1.0
+    default_server_timeout: 10
+    odom_topic: "/odometry/filtered"
+    default_bt_xml_filename: "/home/robo/ros2_ws/behavior_trees/inline_test.xml"
+    default_nav_to_pose_bt_xml: "/home/robo/ros2_ws/behavior_trees/inline_test.xml"
+    default_nav_through_poses_bt_xml: "/home/robo/ros2_ws/behavior_trees/inline_test.xml"
+    always_reload_bt_xml: true
+    plugin_lib_names:
+      - nav2_compute_path_to_pose_action_bt_node
+      - nav2_follow_path_action_bt_node
+      - nav2_goal_reached_condition_bt_node

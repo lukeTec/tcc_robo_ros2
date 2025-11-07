@@ -14,6 +14,7 @@ def generate_launch_description():
                 'frame_id': 'laser',
                 'inverted': False,
                 'angle_compensate': True,
+                'use_sim_time': False
             }]
         )
     ])

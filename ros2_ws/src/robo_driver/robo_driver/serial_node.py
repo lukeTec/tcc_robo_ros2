@@ -4,8 +4,9 @@ import rclpy
 from rclpy.node import Node
 import serial
 import math
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, TransformStamped
 from nav_msgs.msg import Odometry
+from tf2_ros import TransformBroadcaster
 
 SERIAL_PORT = '/dev/ttyACM0'
 BAUD_RATE = 115200
@@ -42,7 +43,8 @@ class RoboDriverNode(Node):
 
         # Pub/Sub
         self.odom_pub = self.create_publisher(Odometry, 'odom', 10)
-        self.subscription = self.create_subscription(Twist, 'cmd_vel', self.cmd_vel_callback, 10)
+        self.tf_broadcaster = TransformBroadcaster(self)
+        self.subscription = self.create_subscription(Twist, 'cmd_vel_raw', self.cmd_vel_callback, 10)
 
         # Timer 20 Hz
         self.timer = self.create_timer(1.0 / 20.0, self.serial_read_loop)
@@ -78,17 +80,6 @@ class RoboDriverNode(Node):
     
     def serial_read_loop(self):
         try:
-            if self.ser.in_waiting <= 0:
-                return
-            data_line = self.ser.readline().decode('utf-8', errors='ignore').strip()
-            if not data_line:
-                return
-            self.update_odometry(data_line)
-        except Exception as e:
-            self.get_logger().error(f"Erro fatal no loop serial: {e}")
-
-    def serial_read_loop(self):
-        try:
             processed = 0
             while self.ser.in_waiting > 0:
                 data_line = self.ser.readline().decode('utf-8', errors='ignore').strip()
@@ -102,7 +93,7 @@ class RoboDriverNode(Node):
     def update_odometry(self, data_line: str):
         line = data_line.strip()
 
-        # Tente sincronizar com 'O,' mais à direita
+        # Sincronizar com 'O,' mais à direita
         if not line.startswith('O,'):
             idx = line.rfind('O,')
             if idx != -1:
@@ -110,21 +101,16 @@ class RoboDriverNode(Node):
             else:
                 return
 
-        # Quebre e filtre apenas tokens numéricos válidos
+        # Parse: ["O", ticksL, ticksR, velL, velR, theta]
         parts_raw = line.split(',')
-        # Esperamos: ["O", ticksL, ticksR, velL, velR, theta]
-        # Porém pode vir "sujeira" no final. Vamos extrair até 6 tokens.
         parts = []
         for p in parts_raw:
             if len(parts) == 0:
-                # Primeiro deve ser "O"
                 if p.strip() == 'O':
                     parts.append('O')
                 else:
-                    # Se o primeiro não for 'O', descarte
                     return
             else:
-                # Para os 5 próximos, tente converter em float/long depois
                 parts.append(p.strip())
                 if len(parts) == 6:
                     break
@@ -132,13 +118,14 @@ class RoboDriverNode(Node):
         if len(parts) != 6:
             self.get_logger().warn(f"Dados malformados (6 esperados, got {len(parts)}): '{line}'")
             return
+
         # Parse seguro
         current_ticks_l = safe_float(parts[1], None)
         current_ticks_r = safe_float(parts[2], None)
         vel_ticks_s_l = safe_float(parts[3], None)
         vel_ticks_s_r = safe_float(parts[4], None)
         theta_imu = safe_float(parts[5], None)
-        # Validação
+
         if None in (current_ticks_l, current_ticks_r, vel_ticks_s_l, vel_ticks_s_r, theta_imu):
             self.get_logger().warn(f"Tokens inválidos: '{line}'")
             return
@@ -149,9 +136,8 @@ class RoboDriverNode(Node):
 
         # Tempo
         self.current_time = self.get_clock().now()
-        dt = (self.current_time - self.last_time).nanoseconds / 1.0e9
-        if dt <= 0.0 or math.isnan(dt) or math.isinf(dt):
-            dt = 1e-3
+        dt = (self.current_time - self.last_time).nanoseconds / 1e9
+        dt = max(1e-3, min(dt, 0.2))
         self.last_time = self.current_time
 
         # Inicialização
@@ -163,6 +149,13 @@ class RoboDriverNode(Node):
         # Deltas
         delta_ticks_l = current_ticks_l - self.last_ticks_l
         delta_ticks_r = current_ticks_r - self.last_ticks_r
+
+        # Proteção contra saltos
+        if abs(delta_ticks_l) > 1e6 or abs(delta_ticks_r) > 1e6:
+            self.get_logger().warn("Ticks jump detected – re-sincronizando contadores")
+            self.last_ticks_l = current_ticks_l
+            self.last_ticks_r = current_ticks_r
+            return  # ✅ AGORA O RETURN ESTÁ DENTRO DO IF
 
         # Distâncias (metros)
         dist_l = delta_ticks_l * self.METERS_PER_TICK
@@ -178,22 +171,23 @@ class RoboDriverNode(Node):
         if math.isnan(vx) or math.isinf(vx): vx = 0.0
         if math.isnan(wz) or math.isinf(wz): wz = 0.0
 
-        self.linear_vel_ms = vx
-        self.angular_vel_rs = wz
-
         # Integra a pose usando yaw do IMU
         dist_center = (dist_l + dist_r) / 2.0
+        max_step = 0.5
+        if abs(dist_center) > max_step:
+            self.get_logger().warn(f"Outlier dist_center={dist_center:.3f} m – descartando")
+            dist_center = 0.0
         if math.isnan(dist_center) or math.isinf(dist_center):
             dist_center = 0.0
 
         self.x_pos += dist_center * math.cos(self.theta_imu_rad)
         self.y_pos += dist_center * math.sin(self.theta_imu_rad)
 
-        # Normalização básica
+        # Normalização
         if math.isnan(self.x_pos) or math.isinf(self.x_pos): self.x_pos = 0.0
         if math.isnan(self.y_pos) or math.isinf(self.y_pos): self.y_pos = 0.0
 
-        # Quaternion (z,w)
+        # Quaternion
         qz = math.sin(self.theta_imu_rad / 2.0)
         qw = math.cos(self.theta_imu_rad / 2.0)
 
@@ -223,6 +217,12 @@ class RoboDriverNode(Node):
 
         odom.twist.twist.linear.x = float(vx)
         odom.twist.twist.angular.z = float(wz)
+    
+        # ✅ Zerar twist quando parado
+        if delta_ticks_l == 0 and delta_ticks_r == 0:
+            odom.twist.twist.linear.x = 0.0
+            odom.twist.twist.angular.z = 0.0
+
         odom.twist.covariance = [
             0.05, 0.0, 0.0, 0.0, 0.0, 0.0,
             0.0, 0.05, 0.0, 0.0, 0.0, 0.0,
@@ -233,6 +233,21 @@ class RoboDriverNode(Node):
         ]
 
         self.odom_pub.publish(odom)
+        
+        # --- TF broadcaster: odom -> base_link ---
+        t = TransformStamped()
+        t.header.stamp = self.current_time.to_msg()
+        t.header.frame_id = "odom"
+        t.child_frame_id = "base_link"
+        t.transform.translation.x = float(self.x_pos)
+        t.transform.translation.y = float(self.y_pos)
+        t.transform.translation.z = 0.0
+        t.transform.rotation.x = 0.0
+        t.transform.rotation.y = 0.0
+        t.transform.rotation.z = float(qz)
+        t.transform.rotation.w = float(qw)
+
+        self.tf_broadcaster.sendTransform(t)
 
         self.last_ticks_l = current_ticks_l
         self.last_ticks_r = current_ticks_r

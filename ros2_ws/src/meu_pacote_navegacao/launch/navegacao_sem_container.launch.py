@@ -2,11 +2,12 @@
 import os
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, Command
+from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
 from launch_ros.actions import Node
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.actions import IncludeLaunchDescription
+from launch.actions import IncludeLaunchDescription, TimerAction
 
 def generate_launch_description():
     pkg_nav2_bringup = get_package_share_directory('nav2_bringup')
@@ -16,19 +17,25 @@ def generate_launch_description():
     # Caminhos
     map_yaml = '/home/robo/ros2_ws/maps/meu_mapa_final.yaml'
     nav2_params = '/home/robo/ros2_ws/src/meu_pacote_navegacao/config/nav2_params.yaml'
-    ekf_params = os.path.join(pkg_local, 'config', 'ekf_params.yaml')
+    ekf_params = os.path.join(pkg_local, 'config', 'robot_localization.yaml')
+    urdf_file = os.path.join(pkg_local, 'urdf', 'meu_robo.urdf')
 
     # Arg use_sim_time para consistência
     use_sim_time = LaunchConfiguration('use_sim_time', default='false')
 
-    # TF estático base_link -> laser (ajuste z conforme seu hardware)
-    static_tf = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        name='static_tf_base_laser',
-        arguments=['0.30', '0.30', '0.43', '0', '0', '0', 'base_link', 'laser']
-    )
+    with open(urdf_file, 'r') as infp:
+        robot_desc = infp.read()
 
+    rsp_node = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        name='robot_state_publisher',
+        output='screen',
+        parameters=[{
+            'robot_description': robot_desc,
+            'use_sim_time': False
+        }],
+    )
     # EKF (publica odom->base_link)
     ekf_node = Node(
         package='robot_localization',
@@ -43,6 +50,13 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(pkg_slam, 'launch', 'rplidar.launch.py')
         )
+    )
+
+    scan_fixer = Node(
+        package='robo_driver',
+        executable='scan_timestamp_fixer',
+        name='scan_timestamp_fixer',
+        output='screen'
     )
 
     # Map server
@@ -104,18 +118,9 @@ def generate_launch_description():
         remappings=[
           ('/cmd_vel', '/cmd_vel'),             # saída para driver
           ('/cmd_vel_raw', '/cmd_vel_raw'),      # entrada do controller
-          ('/odom', '/odometry/filtered') #feedback
+          ('/odom', '/odom') #feedback
         ]
-    )
-
-    # Behavior server (spin, backup, wait, etc.)
-#    behavior_server = Node(
-#        package='nav2_behaviors',
-#        executable='behavior_server',
-#        name='behavior_server',
-#        output='screen',
-#        parameters=[nav2_params]
-#    )
+     )
 
     bt_navigator = Node(
         package='nav2_bt_navigator',
@@ -149,16 +154,16 @@ def generate_launch_description():
                 'controller_server',
                 'smoother_server',
                 'bt_navigator_custom',
-            #    'behavior_server',
             ]
         }]
     )
 
     return LaunchDescription([
         # Sensores e base
-        ekf_node,
-        static_tf,
+        rsp_node,
         rplidar_launch,
+        ekf_node,
+        scan_fixer,
         # Nav2 nodes standalone
         map_server,
         amcl,
@@ -166,7 +171,6 @@ def generate_launch_description():
         controller_server,
         smoother_server,
         velocity_smoother,
-#        behavior_server,
         bt_navigator,
         lifecycle_manager
     ])

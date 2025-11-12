@@ -1,16 +1,16 @@
 #include <Arduino.h>
-#include <Wire.h> 
-#include <Adafruit_MPU6050.h> 
-#include <Adafruit_Sensor.h> 
-#include <string.h> 
+#include <Wire.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <string.h>
 #include <math.h> // Para PI
 
 // --- CONSTANTES GLOBAIS E PINOS ---
 #define LEFT 0
-#define RIGHT 1 
+#define RIGHT 1
 
 // Publicar Odometria a cada 50ms (20 Hz)
-const int ODOM_PUB_INTERVAL = 50; 
+const int ODOM_PUB_INTERVAL = 50;
 
 // PINOS DE CONTROLE (BTS7960)
 const int M1_PWM_R_PIN = 8;    
@@ -19,10 +19,10 @@ const int M2_PWM_R_PIN = 10;
 const int M2_PWM_L_PIN = 11;    
 
 // PINOS DO ENCODER
-const int ENCODER_L_A_PIN = 28; 
-const int ENCODER_L_B_PIN = 29; 
-const int ENCODER_R_A_PIN = 30; 
-const int ENCODER_R_B_PIN = 31; 
+const int ENCODER_L_A_PIN = 28;
+const int ENCODER_L_B_PIN = 29;
+const int ENCODER_R_A_PIN = 30;
+const int ENCODER_R_B_PIN = 31;
 
 // ==========================================================
 // --- VARIÁVEIS DE ESTADO E CALIBRAÇÃO ---
@@ -31,8 +31,8 @@ const int ENCODER_R_B_PIN = 31;
 // Variáveis de Estado do Encoder
 volatile long encoderCount[2] = {0, 0}; // Alterado para long para maior precisão
 volatile long encoderPrevCount[2] = {0, 0};
-volatile unsigned long lastTimeSpeed[2] = {0, 0}; 
-volatile double currentTicksPerSecond[2] = {0.0, 0.0}; 
+volatile unsigned long lastTimeSpeed[2] = {0, 0};
+volatile double currentTicksPerSecond[2] = {0.0, 0.0};
 int pwm_L_last = 0;
 int pwm_R_last = 0;
 const int PWM_SLEW_STEP = 8; // máx variação por ciclo (~8/255)
@@ -45,22 +45,22 @@ double gyro_bias_z = 0.0;             // Desvio (bias) do giroscópio Z
 bool imu_calibrated = false;          // Flag de calibração
 
 // Constantes de Cinemática
-const double MAX_RPM_SETPOINT = 40.0; 
-const double WHEEL_DIAMETER_M = 0.127; 
+const double MAX_RPM_SETPOINT = 40.0;
+const double WHEEL_DIAMETER_M = 0.127;
 const double BASE_WIDTH_M = 0.66; // distância entre rodas
 const double WHEEL_RADIUS_M = WHEEL_DIAMETER_M / 2.0;
 const double MAX_LINEAR_VEL_MS = (MAX_RPM_SETPOINT / 60.0) * 2.0 * PI * WHEEL_RADIUS_M; // ~0.266 m/s
 
 // Variáveis de Comando (Velocidades Desejadas do ROS)
-double target_v_linear = 0.0; 
-double target_omega_angular = 0.0; 
+double target_v_linear = 0.0;
+double target_omega_angular = 0.0;
 
 // Variável para o tempo limite de segurança
 unsigned long last_cmd_time = 0;
 const long CMD_TIMEOUT_MS = 1200; // 1200 milissegundos é um bom valor padrão
 
-// 
-// --- HELPER --- 
+//
+// --- HELPER ---
 //
 int slew_limit(int target, int last, int step) {
     if (target > last + step) return last + step;
@@ -109,9 +109,9 @@ double Encoder::readTicksPerSecond(int encoder_side) {
     noInterrupts(); double ticks_s = currentTicksPerSecond[encoder_side]; interrupts(); return ticks_s;
 }
 void Encoder::reset(){
-  noInterrupts(); 
-  encoderCount[LEFT] = 0; encoderCount[RIGHT] = 0; 
-  encoderPrevCount[LEFT] = 0; encoderPrevCount[RIGHT] = 0; 
+  noInterrupts();
+  encoderCount[LEFT] = 0; encoderCount[RIGHT] = 0;
+  encoderPrevCount[LEFT] = 0; encoderPrevCount[RIGHT] = 0;
   lastTimeSpeed[LEFT] = millis(); lastTimeSpeed[RIGHT] = millis();
   interrupts();
 }
@@ -121,7 +121,7 @@ void Encoder::reset(){
 // de forma simétrica ao que funcionou no código de teste (assumindo que o LEFT é invertido).
 
 // Motor Esquerdo (LEFT) - Invertido (Para frente é '++')
-void Encoder::interruptionChAL() { 
+void Encoder::interruptionChAL() {
     bool curA = digitalRead(obj_Encoder-> DI_ENCODER_CH_AL);
     bool curB = digitalRead(obj_Encoder->DI_ENCODER_CH_BL);
     if (curA != curB) { encoderCount[LEFT]--; } else { encoderCount[LEFT]++; }
@@ -133,7 +133,7 @@ void Encoder::interruptionChBL() {
 }
 
 // Motor Direito (RIGHT) - Não Invertido (Para frente é '--')
-void Encoder::interruptionChAR() { 
+void Encoder::interruptionChAR() {
     bool curA = digitalRead(obj_Encoder-> DI_ENCODER_CH_AR);
     bool curB = digitalRead(obj_Encoder->DI_ENCODER_CH_BR);
     if (curA != curB) { encoderCount[RIGHT]++; } else { encoderCount[RIGHT]--; }
@@ -150,7 +150,7 @@ void Encoder::interruptionChBR() {
 // ==========================================================
 
 Encoder encoder_obj(
-    ENCODER_L_A_PIN, ENCODER_L_B_PIN, 
+    ENCODER_L_A_PIN, ENCODER_L_B_PIN,
     ENCODER_R_A_PIN, ENCODER_R_B_PIN  
 );
 
@@ -160,6 +160,9 @@ Encoder encoder_obj(
  */
 void setMotorPWM(int motor_side, int pwm_value) {
     
+    // Limitador zero-zone para evitar vibração
+    if (abs(pwm_value) < 10) pwm_value = 0;
+
     // Garantir que o valor está no range [-255, 255]
     if (pwm_value > 255) pwm_value = 255;
     if (pwm_value < -255) pwm_value = -255;
@@ -173,9 +176,9 @@ void setMotorPWM(int motor_side, int pwm_value) {
     
     // Prepara os valores de PWM:
     // speed_fwd recebe 'speed' apenas se o comando for de Ré (inversão)
-    int speed_fwd = reverse_cmd ? speed : 0; 
+    int speed_fwd = reverse_cmd ? speed : 0;
     // speed_rev recebe 'speed' apenas se o comando for de Frente (inversão)
-    int speed_rev = reverse_cmd ? 0 : speed; 
+    int speed_rev = reverse_cmd ? 0 : speed;
     
     if (motor_side == LEFT) {
         // Motor Esquerdo
@@ -284,7 +287,7 @@ void calculateAndSetPWM(double v, double omega) {
     double v_ref_R = v + (omega * BASE_WIDTH_M / 2.0);
 
     // 2. CONVERSÃO DE VELOCIDADE (m/s) PARA PWM (0 a 255)
-    double max_v = MAX_LINEAR_VEL_MS; 
+    double max_v = MAX_LINEAR_VEL_MS;
     
     // Regra de três: PWM = (V_ref / V_max) * 255
     int pwm_L = (int)((v_ref_L / max_v) * 255.0);
@@ -296,7 +299,7 @@ void calculateAndSetPWM(double v, double omega) {
     pwm_R_last = pwm_R;
     
     // 3. ATUAÇÃO NO MOTOR
-    setMotorPWM(LEFT, pwm_L); 
+    setMotorPWM(LEFT, pwm_L);
     setMotorPWM(RIGHT, pwm_R);
 }
 
@@ -304,7 +307,7 @@ void calculateAndSetPWM(double v, double omega) {
  * @brief Lê o buffer Serial e atualiza as velocidades alvo (V, Omega).
  */
 void readSerialCommand() {
-    static char buffer[30]; 
+    static char buffer[30];
     static int bufferIndex = 0;
     
     if (Serial.available()) {
@@ -316,7 +319,7 @@ void readSerialCommand() {
         }
         
         buffer[bufferIndex] = '\0';
-        bufferIndex = 0; 
+        bufferIndex = 0;
 
         // PROTOCOLO: V,<V_LINEAR>,<OMEGA_ANGULAR>
         if (buffer[0] == 'V') {
@@ -325,10 +328,10 @@ void readSerialCommand() {
             int i = 0;
             
             // Pula o 'V,' (2 caracteres)
-            token = strtok(buffer + 2, ","); 
+            token = strtok(buffer + 2, ",");
             
             while (token != NULL && i < 2) {
-                values[i++] = atof(token); 
+                values[i++] = atof(token);
                 token = strtok(NULL, ",");
             }
             
@@ -354,7 +357,7 @@ void publishOdometry(unsigned long currentTime) {
     double ticks_sL = 0.0, ticks_sR = 0.0;
 
     // --- Cópia atômica das variáveis voláteis ---
-    noInterrupts(); 
+    noInterrupts();
     ticksL_safe = encoderCount[LEFT];
     ticksR_safe = encoderCount[RIGHT];
     lastTimeL_safe = lastTimeSpeed[LEFT];
@@ -374,12 +377,17 @@ void publishOdometry(unsigned long currentTime) {
     unsigned long deltaTimeR = currentTime - lastTimeR_safe;
     if (deltaTimeL > 0) ticks_sL = (deltaTicksL / (double)deltaTimeL) * 1000.0;
     if (deltaTimeR > 0) ticks_sR = (deltaTicksR / (double)deltaTimeR) * 1000.0;
+    
+    if (abs(deltaTicksL) > 2000 || abs(deltaTicksR) > 2000) {
+        encoder_obj.reset();
+        return;
+    }
 
     // --- Usa o ângulo atualizado pelo IMU ---
-    double theta = currentTheta;
+    double theta = 0;
 
     // --- Publicação via Serial ---
-    char buffer[96]; 
+    char buffer[96];
     snprintf(buffer, sizeof(buffer), "O,%ld,%ld,%.1f,%.1f,%.5f",
             ticksL_safe, ticksR_safe,
             ticks_sL, ticks_sR,
@@ -396,7 +404,7 @@ void setup() {
     pinMode(M2_PWM_R_PIN, OUTPUT); pinMode(M2_PWM_L_PIN, OUTPUT);
 
     encoder_obj.setup();
-    stopAllMotors(); 
+    stopAllMotors();
     encoder_obj.reset();
 
     // --- Inicializa o MPU-6050 ---
@@ -422,8 +430,7 @@ void loop() {
 
     // 2. Verifica timeout de segurança
     if (current_time_ms - last_cmd_time > CMD_TIMEOUT_MS) {
-        target_v_linear = 0.0;
-        target_omega_angular = 0.0;
+        stopAllMotors();
     }
 
     // 3. Cinemática inversa e controle de motores

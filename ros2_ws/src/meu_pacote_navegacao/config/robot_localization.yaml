@@ -1,49 +1,42 @@
-# robot_localization.yaml 
+# robot_localization.yaml
 # -----------------------------------------------------------------
 
 robot_localization:
   ros__parameters:
-
+    use_sim_time: false
     frequency: 20.0
-    sensor_timeout: 0.1
-    two_d_mode: true
+    sensor_timeout: 0.3
+    frequency: 20.0
     publish_tf: true
-    print_diagnostics: true
-    process_noise_covariance: [0.05, 0, 0, 0, 0, 0,
-                           0, 0.05, 0, 0, 0, 0,
-                           0, 0, 0.01, 0, 0, 0,
-                           0, 0, 0, 0.01, 0, 0,
-                           0, 0, 0, 0, 0.01, 0,
-                           0, 0, 0, 0, 0, 0.01]
-
-    initial_estimate_covariance: [1e-3, 0, 0, 0, 0, 0,
-                              0, 1e-3, 0, 0, 0, 0,
-                              0, 0, 1e-6, 0, 0, 0,
-                              0, 0, 0, 1e-6, 0, 0,
-                              0, 0, 0, 0, 1e-6, 0,
-                              0, 0, 0, 0, 0, 1e-6]
-    # --- Frames  ---
+    publish_odometry: true
+    two_d_mode: true
     map_frame: map
     odom_frame: odom
     base_link_frame: base_link
     world_frame: odom
 
-    odom0: odom
-    odom0_queue_size: 9
+    odom0: /odom
+    odom0_config: [true, true, false,
+                   false, false, true,
+                   false, false, false,
+                   false, false, false,
+                   false, false, false]
+    odom0_differential: false
+    odom0_queue_size: 10
+    odom0_nodelay: true
 
-    # Diz ao EKF para IGNORAR a Pose (X,Y,Yaw) do T2
-    # e usar APENAS as Velocidades (Twist)
-    odom0_differential: true
-    odom0_relative: false # 'false' é correto quando differential=true e medindo velocidades
+    # ============== IMU  ======================
+    imu0: /imu/data
+    imu0_config: [false, false, false,
+                  true,  true,  true,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_remove_gravitational_acceleration: true
+    imu0_differential: false
+    imu0_queue_size: 10
+    imu0_nodelay: true
 
-    odom0_config:
-    # [X,     Y,     Z,      (Pose)
-    #  Roll,  Pitch, Yaw,
-    #  Vx,    Vy,    Vz,     (Velocidade/Twist)
-    #  VR,    VP,    VYaw,
-    #  Ax,    Ay,    Az]
-      [true, true, false,  # Ignorar X, Y, Z da Pose
-       false, false, true,  # Ignorar R, P, Y da Pose
-       true,  false, false,  # USAR Vx (Velocidade Linear)
-       false, false, true,   # USAR V-Yaw (Velocidade Angular)
-       false, false, false]  # Ignorar o resto
+    transform_time_offset: 0.05
+    transform_timeout: 0.5
+    predict_to_current_time: true

@@ -11,6 +11,8 @@
 
 // Publicar Odometria a cada 50ms (20 Hz)
 const int ODOM_PUB_INTERVAL = 50; 
+// Publicar Ultrassom a cada 100ms (10 Hz) - Sensores são mais lentos
+const int SONAR_PUB_INTERVAL = 100;
 
 // PINOS DE CONTROLE (BTS7960)
 const int M1_PWM_R_PIN = 8;    
@@ -24,32 +26,50 @@ const int ENCODER_L_B_PIN = 29;
 const int ENCODER_R_A_PIN = 30; 
 const int ENCODER_R_B_PIN = 31; 
 
+// --- NOVOS PINOS ULTRASSÔNICOS ---
+// Frontal
+const int US_FRONT_TRIG = 24;
+const int US_FRONT_ECHO = 25;
+// Traseiro
+const int US_REAR_TRIG  = 22;
+const int US_REAR_ECHO  = 23;
+// Esquerdo
+const int US_LEFT_TRIG  = 26;
+const int US_LEFT_ECHO  = 27;
+// Direito (Pulei 28-31 pois são encoders)
+const int US_RIGHT_TRIG = 32;
+const int US_RIGHT_ECHO = 33;
+
+// Distância Máxima de Leitura (para não travar o loop)
+// 18000 microsegundos ~= 3 metros. Se demorar mais que isso, retorna 0.
+const unsigned long MAX_PULSE_TIMEOUT = 18000; 
+
 // ==========================================================
 // --- VARIÁVEIS DE ESTADO E CALIBRAÇÃO ---
 // ==========================================================
 
 // Variáveis de Estado do Encoder
-volatile long encoderCount[2] = {0, 0}; // Alterado para long para maior precisão
+volatile long encoderCount[2] = {0, 0}; 
 volatile long encoderPrevCount[2] = {0, 0};
 volatile unsigned long lastTimeSpeed[2] = {0, 0}; 
 volatile double currentTicksPerSecond[2] = {0.0, 0.0}; 
 int pwm_L_last = 0;
 int pwm_R_last = 0;
-const int PWM_SLEW_STEP = 8; // máx variação por ciclo (~8/255)
+const int PWM_SLEW_STEP = 8; 
 
 // Variáveis de Estado do IMU
 Adafruit_MPU6050 mpu;
 volatile double currentTheta = 0.0; // Ângulo Theta/Yaw em RADIANOS
 unsigned long lastIMUTime = 0;
-double gyro_bias_z = 0.0;             // Desvio (bias) do giroscópio Z
-bool imu_calibrated = false;          // Flag de calibração
+double gyro_bias_z = 0.0;             
+bool imu_calibrated = false;          
 
 // Constantes de Cinemática
 const double MAX_RPM_SETPOINT = 40.0; 
 const double WHEEL_DIAMETER_M = 0.127; 
-const double BASE_WIDTH_M = 0.66; // distância entre rodas
+const double BASE_WIDTH_M = 0.66; 
 const double WHEEL_RADIUS_M = WHEEL_DIAMETER_M / 2.0;
-const double MAX_LINEAR_VEL_MS = (MAX_RPM_SETPOINT / 60.0) * 2.0 * PI * WHEEL_RADIUS_M; // ~0.266 m/s
+const double MAX_LINEAR_VEL_MS = (MAX_RPM_SETPOINT / 60.0) * 2.0 * PI * WHEEL_RADIUS_M; 
 
 // Variáveis de Comando (Velocidades Desejadas do ROS)
 double target_v_linear = 0.0; 
@@ -57,7 +77,7 @@ double target_omega_angular = 0.0;
 
 // Variável para o tempo limite de segurança
 unsigned long last_cmd_time = 0;
-const long CMD_TIMEOUT_MS = 1200; // 1200 milissegundos é um bom valor padrão
+const long CMD_TIMEOUT_MS = 1200; 
 
 // 
 // --- HELPER --- 
@@ -82,13 +102,11 @@ public:
     void reset();
     static Encoder* obj_Encoder;
     
-    // Funções estáticas para interrupção (agora mais limpas)
     static void interruptionChAL(); static void interruptionChBL();
     static void interruptionChAR(); static void interruptionChBR();
 };
 Encoder* Encoder::obj_Encoder = 0;
 
-// Implementações da Classe Encoder (Lógica padronizada)
 Encoder::Encoder(int pin_AL, int pin_BL, int pin_AR, int pin_BR) {
     this-> DI_ENCODER_CH_AL = pin_AL; this-> DI_ENCODER_CH_BL = pin_BL;
     this-> DI_ENCODER_CH_AR = pin_AR; this-> DI_ENCODER_CH_BR = pin_BR;
@@ -116,11 +134,6 @@ void Encoder::reset(){
   interrupts();
 }
 
-// --- Funções de Interrupção (Lógica de Contagem Simples) ---
-// NOTA: A inversão de sinal (incremento/decremento) agora deve ser tratada
-// de forma simétrica ao que funcionou no código de teste (assumindo que o LEFT é invertido).
-
-// Motor Esquerdo (LEFT) - Invertido (Para frente é '++')
 void Encoder::interruptionChAL() { 
     bool curA = digitalRead(obj_Encoder-> DI_ENCODER_CH_AL);
     bool curB = digitalRead(obj_Encoder->DI_ENCODER_CH_BL);
@@ -132,7 +145,6 @@ void Encoder::interruptionChBL() {
     if (curA == curB) { encoderCount[LEFT]--; } else { encoderCount[LEFT]++; }
 }
 
-// Motor Direito (RIGHT) - Não Invertido (Para frente é '--')
 void Encoder::interruptionChAR() { 
     bool curA = digitalRead(obj_Encoder-> DI_ENCODER_CH_AR);
     bool curB = digitalRead(obj_Encoder->DI_ENCODER_CH_BR);
@@ -144,9 +156,8 @@ void Encoder::interruptionChBR() {
     if (curA == curB) { encoderCount[RIGHT]++; } else { encoderCount[RIGHT]--; }
 }
 
-
 // ==========================================================
-// --- INSTÂNCIAS E FUNÇÕES AUXILIARES DE BAIXO NÍVEL ---
+// --- INSTÂNCIAS E FUNÇÕES AUXILIARES ---
 // ==========================================================
 
 Encoder encoder_obj(
@@ -154,42 +165,23 @@ Encoder encoder_obj(
     ENCODER_R_A_PIN, ENCODER_R_B_PIN  
 );
 
-/**
- * @brief Aplica o valor de PWM (-255 a 255).
- * CORRIGIDO: Usa a lógica de Avanço/Ré para o driver BTS7960.
- */
 void setMotorPWM(int motor_side, int pwm_value) {
-    
-    // Garantir que o valor está no range [-255, 255]
     if (pwm_value > 255) pwm_value = 255;
     if (pwm_value < -255) pwm_value = -255;
     
-    // Determina a direção (True se a velocidade for positiva ou zero)
     bool forward_cmd = (pwm_value >= 0);
     int speed = abs(pwm_value);
-
-    // Determina o comando de Ré (True se a velocidade for negativa)
     bool reverse_cmd = !forward_cmd;
     
-    // Prepara os valores de PWM:
-    // speed_fwd recebe 'speed' apenas se o comando for de Ré (inversão)
     int speed_fwd = reverse_cmd ? speed : 0; 
-    // speed_rev recebe 'speed' apenas se o comando for de Frente (inversão)
     int speed_rev = reverse_cmd ? 0 : speed; 
     
     if (motor_side == LEFT) {
-        // Motor Esquerdo
-        // M1_PWM_R_PIN e M1_PWM_L_PIN
-        // Aplicamos a lógica que funcionou: Pinos invertidos
-        analogWrite(M1_PWM_R_PIN, speed_rev); // Recebe o comando de FRENTE (speed_rev)
-        analogWrite(M1_PWM_L_PIN, speed_fwd); // Recebe o comando de RÉ (speed_fwd)
+        analogWrite(M1_PWM_R_PIN, speed_rev); 
+        analogWrite(M1_PWM_L_PIN, speed_fwd); 
     } else {
-        // Motor Direito
-        // M2_PWM_R_PIN e M2_PWM_L_PIN
-        // Aplicamos a lógica que funcionou: Pinos invertidos (se necessário)
-        // OBS: Se o motor 2 estiver ligado de forma invertida, isso garante a simetria com o Motor 1
-        analogWrite(M2_PWM_R_PIN, speed_rev); // Recebe o comando de FRENTE
-        analogWrite(M2_PWM_L_PIN, speed_fwd); // Recebe o comando de RÉ
+        analogWrite(M2_PWM_R_PIN, speed_rev); 
+        analogWrite(M2_PWM_L_PIN, speed_fwd); 
     }
 }
 void stopAllMotors() {
@@ -197,33 +189,6 @@ void stopAllMotors() {
     setMotorPWM(RIGHT, 0);
 }
 
-/**
- * @brief Calcula a taxa de Ticks por Segundo (velocidade bruta) e armazena.
- */
-void calculateTicksRate(int motor_side) {
-    noInterrupts();
-    long currentTicks = encoderCount[motor_side];
-    unsigned long currentTime = millis();
-    interrupts();
-
-    long deltaTicks = currentTicks - encoderPrevCount[motor_side];
-    unsigned long deltaTime = currentTime - lastTimeSpeed[motor_side];
-
-    if (deltaTime > 0) {
-        double ticks_per_second = (deltaTicks / (double)deltaTime) * 1000.0;
-        
-        noInterrupts();
-        currentTicksPerSecond[motor_side] = ticks_per_second;
-        encoderPrevCount[motor_side] = currentTicks;
-        lastTimeSpeed[motor_side] = currentTime;
-        interrupts();
-    }
-}
-
-/**
- * @brief Calibra o giroscópio Z do MPU-6050
- * Mede o desvio (bias) enquanto o robô está PARADO
- */
 void calibrateIMU() {
     Serial.println(F("[IMU] Iniciando calibração do giroscópio..."));
     const int samples = 500;
@@ -232,8 +197,8 @@ void calibrateIMU() {
 
     for (int i = 0; i < samples; i++) {
         mpu.getEvent(&a, &g, &temp);
-        sum += g.gyro.z;  // leitura em rad/s
-        delay(5);         // 500 * 5ms = 2.5s de amostragem
+        sum += g.gyro.z;  
+        delay(5);         
     }
 
     gyro_bias_z = sum / samples;
@@ -242,51 +207,57 @@ void calibrateIMU() {
     Serial.println(gyro_bias_z, 6);
 }
 
-/**
- * @brief Lê o giroscópio do MPU-6050 e integra o yaw (Z) em radianos.
- * Aplica compensação de bias e normalização de ângulo.
- */
 void readIMUTheta() {
-    if (!imu_calibrated) return;  // garante calibração antes de integrar
+    if (!imu_calibrated) return; 
 
     unsigned long currentTime = micros();
-    double dt = (currentTime - lastIMUTime) / 1e6;  // Δt em segundos
+    double dt = (currentTime - lastIMUTime) / 1e6; 
     lastIMUTime = currentTime;
 
     sensors_event_t a, g, temp;
     mpu.getEvent(&a, &g, &temp);
 
-    // Compensa o bias e integra o yaw
     double yaw_rate_rad_s = g.gyro.z - gyro_bias_z;
     currentTheta += yaw_rate_rad_s * dt;
 
-    // Mantém o ângulo dentro de [-PI, PI]
     while (currentTheta > PI)  currentTheta -= 2.0 * PI;
     while (currentTheta < -PI) currentTheta += 2.0 * PI;
 }
 
-
-// ==========================================================
-// --- FUNÇÕES DE ALTO NÍVEL (Cinemática e Protocolo) ---
-// ==========================================================
-
-/**
- * @brief Executa a Cinemática Inversa e converte a velocidade desejada (m/s) para PWM.
- * NOTA: A lógica de cinemática inversa deve considerar a largura da base (BASE_WIDTH)
- * para a variável omega. O seu código estava simplificado (assumindo BASE_WIDTH = 2).
- * Vamos manter a variável simples por enquanto.
- */
-void calculateAndSetPWM(double v, double omega) {
+// --- FUNÇÃO DE LEITURA DE ULTRASSOM ---
+float readSonarDistance(int trigPin, int echoPin) {
+    // 1. Limpa o Trigger
+    digitalWrite(trigPin, LOW);
+    delayMicroseconds(2);
     
-    // 1. CINEMÁTICA INVERSA (Valores de Referência em m/s de roda)
-    // Formula Simplificada (Base Largura = 2) - Use uma constante de largura de base real em projetos futuros!
+    // 2. Envia pulso de 10us
+    digitalWrite(trigPin, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(trigPin, LOW);
+    
+    // 3. Lê o Echo com TIMEOUT para não travar o robô
+    // MAX_PULSE_TIMEOUT deve ser configurado para ~3 metros
+    long duration = pulseIn(echoPin, HIGH, MAX_PULSE_TIMEOUT);
+    
+    if (duration == 0) {
+        // Timeout (muito longe ou erro) -> Retorna -1 ou max range
+        return 999.0; // 9.99 metros (indica livre)
+    }
+    
+    // 4. Converte para cm
+    return (duration * 0.0343) / 2.0;
+}
+
+// ==========================================================
+// --- FUNÇÕES DE ALTO NÍVEL ---
+// ==========================================================
+
+void calculateAndSetPWM(double v, double omega) {
     double v_ref_L = v - (omega * BASE_WIDTH_M / 2.0);
     double v_ref_R = v + (omega * BASE_WIDTH_M / 2.0);
 
-    // 2. CONVERSÃO DE VELOCIDADE (m/s) PARA PWM (0 a 255)
     double max_v = MAX_LINEAR_VEL_MS; 
     
-    // Regra de três: PWM = (V_ref / V_max) * 255
     int pwm_L = (int)((v_ref_L / max_v) * 255.0);
     int pwm_R = (int)((v_ref_R / max_v) * 255.0);
 
@@ -295,14 +266,10 @@ void calculateAndSetPWM(double v, double omega) {
     pwm_L_last = pwm_L;
     pwm_R_last = pwm_R;
     
-    // 3. ATUAÇÃO NO MOTOR
     setMotorPWM(LEFT, pwm_L); 
     setMotorPWM(RIGHT, pwm_R);
 }
 
-/**
- * @brief Lê o buffer Serial e atualiza as velocidades alvo (V, Omega).
- */
 void readSerialCommand() {
     static char buffer[30]; 
     static int bufferIndex = 0;
@@ -318,13 +285,11 @@ void readSerialCommand() {
         buffer[bufferIndex] = '\0';
         bufferIndex = 0; 
 
-        // PROTOCOLO: V,<V_LINEAR>,<OMEGA_ANGULAR>
         if (buffer[0] == 'V') {
             char *token;
             double values[2];
             int i = 0;
             
-            // Pula o 'V,' (2 caracteres)
             token = strtok(buffer + 2, ","); 
             
             while (token != NULL && i < 2) {
@@ -335,25 +300,18 @@ void readSerialCommand() {
             if (i == 2) {
                 target_v_linear = values[0];
                 target_omega_angular = values[1];
-
-                // Marca o tempo do último comando válido
                 last_cmd_time = millis();
             }
         }
     }
 }
 
-/**
- * @brief Publica odometria com o ângulo atualizado pelo IMU.
- */
 void publishOdometry(unsigned long currentTime) {
-    // --- Variáveis locais "seguras" ---
     long ticksL_safe, ticksR_safe;
     unsigned long lastTimeL_safe, lastTimeR_safe;
     long prevTicksL_safe, prevTicksR_safe;
     double ticks_sL = 0.0, ticks_sR = 0.0;
 
-    // --- Cópia atômica das variáveis voláteis ---
     noInterrupts(); 
     ticksL_safe = encoderCount[LEFT];
     ticksR_safe = encoderCount[RIGHT];
@@ -367,7 +325,6 @@ void publishOdometry(unsigned long currentTime) {
     encoderPrevCount[RIGHT] = ticksR_safe;
     interrupts();
 
-    // --- Cálculo das velocidades ---
     long deltaTicksL = ticksL_safe - prevTicksL_safe;
     long deltaTicksR = ticksR_safe - prevTicksR_safe;
     unsigned long deltaTimeL = currentTime - lastTimeL_safe;
@@ -375,10 +332,8 @@ void publishOdometry(unsigned long currentTime) {
     if (deltaTimeL > 0) ticks_sL = (deltaTicksL / (double)deltaTimeL) * 1000.0;
     if (deltaTimeR > 0) ticks_sR = (deltaTicksR / (double)deltaTimeR) * 1000.0;
 
-    // --- Usa o ângulo atualizado pelo IMU ---
     double theta = currentTheta;
 
-    // --- Publicação via Serial ---
     char buffer[96]; 
     snprintf(buffer, sizeof(buffer), "O,%ld,%ld,%.1f,%.1f,%.5f",
             ticksL_safe, ticksR_safe,
@@ -386,20 +341,43 @@ void publishOdometry(unsigned long currentTime) {
             theta);
     Serial.println(buffer);
 }    
+
+// --- Nova Função: Publicar Sensores ---
+void publishSensors() {
+    // Leitura Sequencial com timeout (segura para o loop)
+    float d_front = readSonarDistance(US_FRONT_TRIG, US_FRONT_ECHO);
+    float d_rear  = readSonarDistance(US_REAR_TRIG,  US_REAR_ECHO);
+    float d_left  = readSonarDistance(US_LEFT_TRIG,  US_LEFT_ECHO);
+    float d_right = readSonarDistance(US_RIGHT_TRIG, US_RIGHT_ECHO);
+
+    // Formato: S,frente,tras,esq,dir
+    Serial.print("S,");
+    Serial.print(d_front, 1); Serial.print(",");
+    Serial.print(d_rear, 1);  Serial.print(",");
+    Serial.print(d_left, 1);  Serial.print(",");
+    Serial.println(d_right, 1);
+}
     
 // ==========================================================
-// --- CÓDIGO PRINCIPAL (setup e loop) ---
+// --- SETUP E LOOP ---
 // ==========================================================
 void setup() {
     Serial.begin(115200);
+    
+    // Configura Motores
     pinMode(M1_PWM_R_PIN, OUTPUT); pinMode(M1_PWM_L_PIN, OUTPUT);
     pinMode(M2_PWM_R_PIN, OUTPUT); pinMode(M2_PWM_L_PIN, OUTPUT);
+
+    // Configura Ultrassônicos
+    pinMode(US_FRONT_TRIG, OUTPUT); pinMode(US_FRONT_ECHO, INPUT);
+    pinMode(US_REAR_TRIG,  OUTPUT); pinMode(US_REAR_ECHO,  INPUT);
+    pinMode(US_LEFT_TRIG,  OUTPUT); pinMode(US_LEFT_ECHO,  INPUT);
+    pinMode(US_RIGHT_TRIG, OUTPUT); pinMode(US_RIGHT_ECHO, INPUT);
 
     encoder_obj.setup();
     stopAllMotors(); 
     encoder_obj.reset();
 
-    // --- Inicializa o MPU-6050 ---
     Wire.begin();
     if (!mpu.begin()) {
         Serial.println(F("[ERRO] MPU6050 não detectado!"));
@@ -408,13 +386,14 @@ void setup() {
         mpu.setGyroRange(MPU6050_RANGE_500_DEG);
         mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
         delay(500);
-        calibrateIMU();          // Realiza calibração inicial (robô deve estar parado)
-        lastIMUTime = micros();  // Marca tempo inicial
+        calibrateIMU();          
+        lastIMUTime = micros();  
     }
 }
     
 void loop() {
     static unsigned long last_odom_time = 0;
+    static unsigned long last_sonar_time = 0; // Timer para o ultrassom
     unsigned long current_time_ms = millis();
 
     // 1. Receber comandos do ROS (V, ω)
@@ -429,10 +408,17 @@ void loop() {
     // 3. Cinemática inversa e controle de motores
     calculateAndSetPWM(target_v_linear, target_omega_angular);
 
-    // 4. Publicar odometria a cada intervalo
+    // 4. Publicar odometria (20Hz - Prioridade Alta)
     if (current_time_ms - last_odom_time >= ODOM_PUB_INTERVAL) {
-        readIMUTheta();                  // Atualiza yaw com IMU
+        readIMUTheta(); 
         publishOdometry(current_time_ms);
         last_odom_time = current_time_ms;
+    }
+
+    // 5. Publicar Sensores (10Hz - Prioridade Média)
+    // Fazemos separado para não engargar a Serial
+    if (current_time_ms - last_sonar_time >= SONAR_PUB_INTERVAL) {
+        publishSensors();
+        last_sonar_time = current_time_ms;
     }
 }

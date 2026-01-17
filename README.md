@@ -4,7 +4,8 @@ Este repositório contém todo o código-fonte, ficheiros de configuração e de
 
 O projeto está dividido em dois marcos principais:
 1.  **Marco 1: Mapeamento (SLAM)** - Criação de um mapa 2D do ambiente.
-2.  **Marco 2: Navegação Autônoma** - Utilização do mapa para localização (AMCL) e planeamento de trajetória (Nav2).
+2.  **Marco 2: Navegação Teleoperada** - Utilização do joystick virtual para navegação.
+3.  **Marco 3: Navegação Autônoma** - Utilização do mapa para localização (AMCL) e planeamento de trajetória (Nav2).
 
 ## 🛠️ Hardware Utilizado
 * **Computador de Bordo:** Raspberry Pi 4 (8GB)

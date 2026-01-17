@@ -8,7 +8,7 @@ O projeto está dividido em dois marcos principais:
 3.  **Marco 3: Navegação Autônoma** - Utilização do mapa para localização (AMCL) e planeamento de trajetória (Nav2).
 
 ## 🛠️ Hardware Utilizado
-* **Computador de Bordo:** Raspberry Pi 4 (8GB)
+* **Computador de Bordo:** Raspberry Pi 3 
 * **Microcontrolador:** Arduino (para controlo de motores e leitura de encoders/IMU)
 * **LIDAR:** RPLIDAR A1
 * **Sensores:** Encoders de Efeito Hall (nas rodas) e IMU (MPU-6050)

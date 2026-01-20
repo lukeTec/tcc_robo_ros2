@@ -1,18 +1,19 @@
 # TCC: Robô Móvel Autônomo com ROS 2
 
-Este repositório contém todo o código-fonte, ficheiros de configuração e de lançamento (launch files) para o projeto de TCC de um robô móvel 2D, utilizando ROS 2 Humble, um Raspberry Pi 4, RPLIDAR A1 e um Arduino.
+Este repositório contém todo o código-fonte, ficheiros de configuração e de lançamento (launch files) para o projeto de TCC de um robô móvel 2D, utilizando ROS 2 Humble, um Raspberry Pi 3, RPLIDAR A1 e um Arduino.
 
 O projeto está dividido em dois marcos principais:
 1.  **Marco 1: Mapeamento (SLAM)** - Criação de um mapa 2D do ambiente.
 2.  **Marco 2: Navegação Teleoperada** - Utilização do joystick virtual para navegação.
 3.  **Marco 3: Navegação Autônoma** - Utilização do mapa para localização (AMCL) e planeamento de trajetória (Nav2).
 
-## 🛠️ Hardware Utilizado
+## 🛠️ Hardware Utilizado 
 * **Computador de Bordo:** Raspberry Pi 3 
-* **Microcontrolador:** Arduino (para controlo de motores e leitura de encoders/IMU)
+* **Microcontrolador:** Arduino Due (para controlo de motores e leitura de encoders/IMU)
 * **LIDAR:** RPLIDAR A1
 * **Sensores:** Encoders de Efeito Hall (nas rodas) e IMU (MPU-6050)
 * **Atuadores:** Motores DC com Drivers BTS7960
+* **(LINK BOM: https://alunos2113.autodesk360.com/g/projects/20250521928912881/data/dXJuOmFkc2sud2lwcHJvZDpmcy5mb2xkZXI6Y28udVRUcF9GOG9TNGFNZWd4S1hGRXpQZw/dXJuOmFkc2sud2lwcHJvZDpkbS5saW5lYWdlOklvcE9EOU9fVFJXd3IxenQ3d2daTHc/bom?compositionType=WORKING&version=13)
 
 ## 💿 Software
 * **SO (RPi & PC):** Ubuntu 22.04
